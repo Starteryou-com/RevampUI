@@ -2,11 +2,10 @@ const express = require("express");
 const multer = require("multer");
 const {GridFSBucket} = require("mongodb");
 const mongoose = require("mongoose");
-const FileMetadata = require("../models/FileMetadata"); // Import the FileMetadata model
+const FileMetadata = require("../models/FileMetadata");
 
 const router = express.Router();
-// Update this line to use the correct MongoDB URI
-const mongoURI = "mongodb://54.196.202.145:27017/Starteryou"; // Add database name 'starteryou'
+const mongoURI = "mongodb://54.196.202.145:27017/Starteryou";
 const conn = mongoose.createConnection(mongoURI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
@@ -14,16 +13,18 @@ const conn = mongoose.createConnection(mongoURI, {
 
 let bucket;
 conn.once("open", () => {
-  bucket = new GridFSBucket(conn.db, {bucketName: "uploads"}); // Use 'uploads' as the bucket name
+  bucket = new GridFSBucket(conn.db, {bucketName: "uploads"});
+  console.log("GridFS bucket initialized");
 });
 
-const storage = multer.memoryStorage(); // Use memory storage for multer
+const storage = multer.memoryStorage();
 const upload = multer({storage});
 
 // Route for uploading an image with metadata
 router.post("/upload", upload.single("file"), async (req, res) => {
+  console.log("Upload request received");
   const {buffer, originalname} = req.file;
-  const {title, uploadedBy} = req.body; // Get title and uploadedBy from request body
+  const {title, uploadedBy} = req.body;
 
   if (!uploadedBy) {
     return res
@@ -43,7 +44,8 @@ router.post("/upload", upload.single("file"), async (req, res) => {
         gridFsFileId: file._id,
       });
 
-      await fileMetadata.save(); // Save metadata to the database
+      await fileMetadata.save();
+      console.log(`File uploaded: ${title}`);
       res
         .status(201)
         .json({file: {_id: file._id, filename: originalname, title}});
@@ -59,26 +61,24 @@ router.post("/upload", upload.single("file"), async (req, res) => {
   });
 });
 
-// Route for updating an existing image by title and deleting the old image after a successful update
+// Route for updating an existing image by title
 router.put("/update", upload.single("file"), async (req, res) => {
+  console.log("Update request received");
   const {buffer, originalname} = req.file;
-  const {title} = req.body; // Get title from the request body
+  const {title} = req.body;
 
   try {
-    // Find the existing file metadata by title
     const existingFileMetadata = await FileMetadata.findOne({title});
     if (!existingFileMetadata) {
       console.error("File not found for title:", title);
       return res.status(404).json({message: "File not found"});
     }
 
-    const oldFileId = existingFileMetadata.gridFsFileId; // Store old file ID for deletion later
+    const oldFileId = existingFileMetadata.gridFsFileId;
 
-    // Create a new upload stream for the new file
     const uploadStream = bucket.openUploadStream(originalname);
     uploadStream.end(buffer);
 
-    // Handle the upload finish event
     uploadStream.on("finish", async (file) => {
       console.log(
         "New version of file uploaded. Old ID:",
@@ -87,11 +87,9 @@ router.put("/update", upload.single("file"), async (req, res) => {
         file._id
       );
 
-      // Update the metadata with the new file ID
       existingFileMetadata.gridFsFileId = file._id;
-      await existingFileMetadata.save(); // Save updated metadata
+      await existingFileMetadata.save();
 
-      // Delete the old file from GridFS
       if (oldFileId) {
         try {
           await bucket.delete(oldFileId);
@@ -118,10 +116,12 @@ router.put("/update", upload.single("file"), async (req, res) => {
 
 // Route to fetch all uploaded files metadata
 router.get("/", async (req, res) => {
+  console.log("Fetching all files");
   try {
     const files = await FileMetadata.find().select(
-      "title originalFilename uploadedBy createdAt:"
+      "title originalFilename uploadedBy createdAt"
     );
+    console.log("Available files:", files);
     res.status(200).json({files});
   } catch (error) {
     console.error("Error fetching files:", error);
@@ -134,15 +134,41 @@ router.get("/title/:title", async (req, res) => {
   const {title} = req.params;
 
   try {
+    console.log("Attempting to find file with title:", title);
+
     const metadata = await FileMetadata.findOne({title});
+    console.log("Found metadata:", metadata);
+
     if (!metadata) {
+      console.log("No metadata found for title:", title);
       return res.status(404).json({message: "File not found"});
     }
 
+    console.log("Found gridFsFileId:", metadata.gridFsFileId);
     const readStream = bucket.openDownloadStream(metadata.gridFsFileId);
+
+    readStream.on("error", (error) => {
+      console.error("Error in readStream:", error);
+      res.status(500).json({message: error.message});
+    });
+
     readStream.pipe(res);
   } catch (error) {
     console.error("Error fetching file by title:", error);
+    res.status(500).json({message: error.message});
+  }
+});
+
+// New route to list all files
+router.get("/list", async (req, res) => {
+  try {
+    const files = await FileMetadata.find().select(
+      "title originalFilename uploadedBy createdAt"
+    );
+    console.log("Available files:", files);
+    res.status(200).json({files});
+  } catch (error) {
+    console.error("Error listing files:", error);
     res.status(500).json({message: error.message});
   }
 });
